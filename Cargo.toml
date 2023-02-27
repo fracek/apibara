@@ -4,6 +4,5 @@ members = [
     "core",
     "node",
     "starknet",
-    "sdk",
-    "examples/starknet-token-transfer"
+    "sdk"
 ]

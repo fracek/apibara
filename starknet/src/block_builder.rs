@@ -4,10 +4,11 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use backoff::{exponential::ExponentialBackoff, ExponentialBackoffBuilder, SystemClock};
 use starknet::{
-    core::types::{self as sn_types, FieldElement},
-    providers::{Provider, SequencerGatewayProvider, SequencerGatewayProviderError},
+    core::types::{self as sn_types, FieldElement, StarknetError},
+    providers::{Provider, ProviderError, SequencerGatewayProvider, SequencerGatewayProviderError},
 };
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 use crate::core::{
     transaction, Block, BlockHash, BuiltinInstanceCounter, DeclareTransaction,
@@ -25,6 +26,10 @@ pub struct BlockBuilder {
 pub enum BlockBuilderError {
     #[error("error performing a starknet gateway request")]
     Rpc(#[from] SequencerGatewayProviderError),
+    #[error("starknet error")]
+    StarkNet(#[from] StarknetError),
+    #[error("client is being rate limited")]
+    RateLimited,
     #[error("unexpected pending block")]
     UnexpectedPendingBlock,
 }
@@ -84,19 +89,30 @@ impl BlockBuilder {
         block_id: sn_types::BlockId,
         ct: &CancellationToken,
     ) -> std::result::Result<Block, backoff::Error<BlockBuilderError>> {
+        info!("getting block");
+        match block_id {
+            sn_types::BlockId::Number(num) => info!(num = ?num, "number"),
+            sn_types::BlockId::Latest => info!("latest"),
+            _ => {}
+        }
         match self.client.get_block(block_id).await {
             Ok(block) => {
+                info!("ok");
                 let block = block.try_into().map_err(backoff::Error::permanent)?;
                 Ok(block)
             }
-            Err(err @ SequencerGatewayProviderError::Deserialization { .. }) => {
+            Err(ProviderError::RateLimited) => {
                 if ct.is_cancelled() {
-                    return Err(backoff::Error::permanent(BlockBuilderError::Rpc(err)));
+                    return Err(backoff::Error::permanent(BlockBuilderError::RateLimited));
                 }
-                // deserialization errors are actually caused by rate limiting
-                Err(backoff::Error::transient(BlockBuilderError::Rpc(err)))
+                Err(backoff::Error::transient(BlockBuilderError::RateLimited))
             }
-            Err(err) => Err(backoff::Error::permanent(BlockBuilderError::Rpc(err))),
+            Err(ProviderError::StarknetError(err)) => {
+                Err(backoff::Error::permanent(BlockBuilderError::StarkNet(err)))
+            }
+            Err(ProviderError::Other(err)) => {
+                Err(backoff::Error::permanent(BlockBuilderError::Rpc(err)))
+            }
         }
     }
 }
