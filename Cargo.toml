@@ -3,5 +3,6 @@ members = [
     "core",
     "node",
     "sdk",
-    "starknet",
+    "erigon_dna",
+    "starknet"
 ]
